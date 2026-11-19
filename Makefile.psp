@@ -1,0 +1,18 @@
+TARGET := handheld-chess
+OBJS := chess.o ai.o match.o lan.o screen.o lichess_account.o online_extra.o app.o platform_psp.o
+CFLAGS := -O2 -G0 -Wall -Wextra -ffunction-sections -fdata-sections
+CXXFLAGS := -D__PSP__ -std=gnu++17 -fno-exceptions -fno-rtti
+LDFLAGS := -Wl,--gc-sections
+# build.mak and the compiler specs already link the other firmware stubs.
+LIBS := -lstdc++ -lpsppower
+ifeq ($(HANDHELD_CURL),1)
+CXXFLAGS += -DHANDHELD_CURL
+LIBS += -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz
+endif
+BUILD_PRX := 1
+# Keep the base PSP's memory layout on all models.
+PSP_LARGE_MEMORY := 0
+EXTRA_TARGETS := EBOOT.PBP
+PSP_EBOOT_TITLE := Lichess Handheld
+PSPSDK ?= $(shell psp-config --pspsdk-path)
+include $(PSPSDK)/lib/build.mak

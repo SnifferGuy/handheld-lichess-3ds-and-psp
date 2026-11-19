@@ -1,0 +1,9 @@
+/build/
+/dist/
+/EBOOT.PBP
+/*.elf
+lichess-token.txt
+lichess-token-*.tmp
+appearance.txt
+.env
+.env.*

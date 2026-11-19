@@ -1,0 +1,174 @@
+#pragma once
+#include "ai.hpp"
+#include "lan.hpp"
+#include "lichess_account.hpp"
+#include "online_extra.hpp"
+#include "theme.hpp"
+#include <optional>
+namespace handheld {
+uint64_t milliseconds();
+bool launchWorker(void (*entry)(void*),void* arg,unsigned slot=0);
+void joinWorker(unsigned slot=0);
+void drawLivePlayerPanels(const ActiveGame&,const LiveBoard*,ThemeId,bool dual,uint64_t now,int top=112);
+
+enum Key : unsigned { Up=1,Down=2,Left=4,Right=8,Confirm=16,Back=32,Menu=64,Fast=128,Chat=256,AppearanceKey=512,HistoryPrev=1024,HistoryNext=2048 };
+struct Input { unsigned keys=0; int x=-1,y=-1; };
+class App {
+    enum Page { Home,Computer,HostSetup,JoinSetup,LichessSetup,LichessGames,LichessPreview,LichessLobby,Appearance,Game };
+    Page page=Home;
+    chess::Difficulty difficulty=chess::Difficulty::Normal;
+    chess::Color color=chess::White;
+    chess::Match solo;
+    chess::GameState aiPosition;
+    chess::Choice choice;
+    std::atomic<bool> cancelled{false}, done{false};
+    bool working=false, actions=false, claimMove=false, aiFailed=false, connected=false;
+    int clockPreset=0;
+    uint64_t clockTick=0;
+    int cursor=0, selected=-1, option=0, actionOption=0, edit=0, promoOption=0;
+    std::array<int,4> octets{192,168,1,1};
+    std::vector<chess::Move> promotion;
+    std::string notice;
+    uint32_t revision=0, round=0;
+    chess::Match& match();
+    const chess::Match& match() const;
+    chess::Color side() const;
+    bool canMove() const;
+    void activate(int);
+    void click(int);
+    void submit(chess::Action,chess::Move={});
+    bool confirmingResign=false;
+    bool reviewing=false;
+    bool onlineAnalysis=false;
+    chess::Match completedOnline;
+    chess::Position completedInitial;
+    chess::Color analysisColor=chess::White;
+    void beginOnlineAnalysis();
+    int resultOption=0;
+    size_t reviewPly=0;
+    chess::Position reviewPosition;
+    std::optional<chess::Position> variation;
+    std::vector<std::array<int8_t,67>> variationPositions;
+    std::optional<chess::Choice> reviewChoice;
+    bool analyzing=false;
+    const char* credentialPath;
+    const char* caPath;
+    const char* appearancePath;
+    ThemeId themeId;
+    LichessService lichess;
+    ExtraService extra;
+    std::atomic<bool> eventsCancelled{false},eventsDone{false},eventsReady{false};
+    bool eventsRunning=false,lobbyPending=false;
+    uint64_t eventsDeadline=0,eventsRetryAt=0;
+    AccountCheck eventsResult=AccountCheck::Failed;
+    std::string eventToken,eventUsername,challengeName,outgoingChallenge;
+    std::vector<AccountEvent> eventQueue=std::vector<AccountEvent>(32);
+    std::atomic<unsigned> eventRead{0},eventWrite{0};
+    std::vector<Challenge> challenges;
+    int lobbyView=0,lobbyClock=0;
+    LobbyRequest lobbyCommand;
+    std::string selectedChallenge;
+    std::vector<std::string> lobbyItems() const;
+    LobbyReply lobbyReply;
+    std::optional<FriendRequest> friendCommand;
+    FriendReply friendReply;
+    FriendsList friendsList;
+    std::string friendName, selectedFriend;
+    int friendOption=0;
+    void queueFriends(FriendRequest);
+    void applyFriendsReply(uint64_t);
+    void updateFriends(Input,bool dual);
+    void drawFriends(bool dual) const;
+    std::optional<ActiveGame> announcedGame;
+    void enterLobby();
+    void stopLobby();
+    void tickLobby();
+    void updateLobby(Input,bool dual);
+    void drawLobby(bool dual) const;
+    void queueLobby(LobbyRequest);
+    void openOnlineGame(ActiveGame);
+    static void eventsEntry(void*);
+    static void receiveAccountEvent(void*,const AccountEvent&);
+    bool appearanceSaved=true;
+    int historyOffset=0;
+    void setTheme(ThemeId id);
+    std::string accountToken;
+    AccountProfile accountResult;
+    ActiveGames accountGames;
+    int previewIndex=0;
+    std::atomic<LiveBoard*> incomingBoard{nullptr};
+    std::optional<LiveBoard> liveBoard;
+    struct PendingRequest { chess::Move move; uint32_t id; BoardAction action=BoardAction::Move; };
+    std::atomic<PendingRequest*> pendingRequest{nullptr};
+    std::atomic<PostResult> requestReply{PostResult::None};
+    std::atomic<bool> interruptStream{false};
+    OnlineRequestGate onlineRequest;
+    uint32_t workerStreamRequest=0;
+    bool onlineMenu=false;
+    ChatState chat;
+    ChatInbox chatInbox;
+    struct PendingChat { bool send=false; std::string text; };
+    std::atomic<PendingChat*> pendingChat{nullptr};
+    TextEditor editor;
+    int chatOption=0,chatScroll=0;
+    bool queueChat(bool send);
+    void tickChat();
+    bool updateChat(Input,bool dual);
+    void drawChat(bool dual) const;
+    static void receiveChat(void*,const ChatMessage&);
+    bool updateEditor(Input,bool dual,std::string&,size_t limit);
+    void drawEditor(bool dual,const std::string&,const char* sendLabel,std::string_view hint={}) const;
+    bool onlineConnected() const;
+    bool canPlayOnline() const;
+    void submitOnlineMove(chess::Move);
+    void submitOnlineAction(BoardAction,chess::Move={});
+    std::vector<std::pair<std::string,BoardAction>> onlineActionList() const;
+    void updateOnline(Input,bool dual);
+    void drawOnline(bool dual) const;
+    bool streamSynchronized=false;
+    AccountCheck streamResult=AccountCheck::Failed;
+    bool checkingAccount=false;
+    uint64_t wifiDeadline=0, accountRetryAt=0;
+    uint64_t streamRetryAt=0;
+    unsigned streamFailures=0;
+    void tickAccount();
+    void startAccountCheck();
+    void returnToLichessSetup();
+    int activeGameRows() const;
+    void stopAccountCheck();
+    static void accountEntry(void*);
+    static void receiveLiveBoard(void*,const LiveBoard&);
+    bool confirmingSignOut=false;
+    void checkCredential();
+    void resetReviewSearch();
+    void updateReviewSearch(Input,bool dual);
+    void drawReviewSearch(bool dual) const;
+    void updateBoardInput(Input);
+    bool updatePromotion(Input,bool dual);
+    void playSelectedMove(chess::Move);
+    void updateResults(Input,bool dual);
+    void drawResults(bool dual) const;
+    void clearSelection();
+    void leave();
+    void pollAI();
+    static void aiEntry(void*);
+    std::vector<std::pair<std::string,chess::Action>> actionList() const;
+    std::vector<std::string> menuItems() const;
+    void drawMenu(bool dual) const;
+    void drawInfo(bool dual) const;
+    void drawBoard(bool dual,const ActiveGame* preview=nullptr) const;
+    void drawControls(bool dual) const;
+    std::string address() const;
+public:
+    chess::Lan lan;
+    bool quit=false;
+    explicit App(const char* cardCredential=nullptr,const char* caBundle=nullptr,
+                 const char* appearanceFile=nullptr,LichessService service={},ExtraService extraService={})
+        :credentialPath(cardCredential),caPath(caBundle),appearancePath(appearanceFile),
+         themeId(loadTheme(appearanceFile)),lichess(service),extra(extraService) {}
+    ~App();
+    void update(Input,bool dual);
+    void onResume();
+    void draw(bool dual,bool top) const;
+};
+}
