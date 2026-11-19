@@ -77,8 +77,18 @@ struct FriendRequest { FriendAction action=FriendAction::Refresh; std::string us
 struct FriendReply { AccountCheck mutation=AccountCheck::Verified; FriendsList list; bool targetUnavailable=false; };
 std::optional<std::string> friendMutationPath(const FriendRequest&);
 FriendReply requestFriends(const FriendRequest&,const std::string&,const char*,const std::atomic<bool>&);
-struct LobbyReply { AccountCheck status=AccountCheck::Failed; std::string challengeId; };
-enum class LobbyAction { Seek, Challenge, Accept, Decline, Cancel };
+enum class InvitationEnd { Closed, Accepted, Declined, Canceled };
+class InvitationStream {
+    std::string line;
+    bool started=false;
+    InvitationEnd result=InvitationEnd::Closed;
+    bool consume();
+public:
+    bool feed(std::string_view);
+    std::optional<InvitationEnd> finish();
+};
+struct LobbyReply { AccountCheck status=AccountCheck::Failed; InvitationEnd invitation=InvitationEnd::Closed; };
+enum class LobbyAction { Seek, Challenge, Accept, Decline };
 struct LobbyRequest { LobbyAction action=LobbyAction::Seek; std::string target; unsigned minutes=15,increment=10; int color=-1; };
 std::optional<std::pair<std::string,std::string>> lobbyRequest(const LobbyRequest&);
 ChatHistory fetchPlayerChat(const std::string&,const std::string&,const char*,const std::atomic<bool>&);

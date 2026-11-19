@@ -11,10 +11,39 @@ ROOT = Path(__file__).resolve().parent
 WIDTH, HEIGHT = 256, 512
 
 
+def launcher_icons():
+    assets = ROOT / "assets"
+    knight_svg = assets / "cburnett" / "wN.svg"
+    scale = 4
+    for file, width, height in (("icon-3ds.png", 48, 48), ("icon-psp.png", 144, 80)):
+        icon = Image.new("RGBA", (width * scale, height * scale), "#302E2B")
+        board_size = (height - 6) * scale
+        left = (icon.width - board_size) // 2
+        top = (icon.height - board_size) // 2
+        board = Image.new("RGBA", (board_size, board_size), "#EBECD0")
+        draw = ImageDraw.Draw(board)
+        half = board_size // 2
+        draw.rectangle((half, 0, board_size, half - 1), fill="#739552")
+        draw.rectangle((0, half, half - 1, board_size), fill="#739552")
+        piece_size = board_size * 9 // 10
+        raster = resvg_py.svg_to_bytes(svg_path=str(knight_svg), width=piece_size, height=piece_size)
+        knight = Image.open(io.BytesIO(raster)).convert("RGBA")
+        origin = (board_size - piece_size) // 2
+        board.alpha_composite(knight, (origin, origin))
+        mask = Image.new("L", board.size)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, board_size - 1, board_size - 1), radius=4*scale, fill=255)
+        icon.paste(board, (left, top), mask)
+        icon.resize((width, height), Image.Resampling.LANCZOS).save(assets / file)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tex3ds", default="tex3ds")
+    parser.add_argument("--icons-only", action="store_true")
     options = parser.parse_args()
+    launcher_icons()
+    if options.icons_only:
+        return
     atlas = Image.new("RGBA", (WIDTH, HEIGHT))
     x, y, shelf = 1, 1, 0
 

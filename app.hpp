@@ -61,7 +61,7 @@ class App {
     bool eventsRunning=false,lobbyPending=false;
     uint64_t eventsDeadline=0,eventsRetryAt=0;
     AccountCheck eventsResult=AccountCheck::Failed;
-    std::string eventToken,eventUsername,challengeName,outgoingChallenge;
+    std::string eventToken,eventUsername,challengeName;
     std::vector<AccountEvent> eventQueue=std::vector<AccountEvent>(32);
     std::atomic<unsigned> eventRead{0},eventWrite{0};
     std::vector<Challenge> challenges;
@@ -94,6 +94,8 @@ class App {
     void setTheme(ThemeId id);
     std::string accountToken;
     AccountProfile accountResult;
+    ConnectionResult connectionResult;
+    bool testingConnection=false;
     ActiveGames accountGames;
     int previewIndex=0;
     std::atomic<LiveBoard*> incomingBoard{nullptr};
@@ -132,7 +134,7 @@ class App {
     uint64_t streamRetryAt=0;
     unsigned streamFailures=0;
     void tickAccount();
-    void startAccountCheck();
+    void startAccountCheck(bool testConnection=false);
     void returnToLichessSetup();
     int activeGameRows() const;
     void stopAccountCheck();

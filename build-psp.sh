@@ -8,6 +8,7 @@ command -v psp-config >/dev/null || {
 stage="$(mktemp -d)"
 trap 'rm -f -- "$stage"/*; rmdir -- "$stage"' EXIT
 cp -- "$project"/*.cpp "$project"/*.hpp "$project/Makefile.psp" "$stage/"
+cp -- "$project/assets/icon-psp.png" "$stage/icon-psp.png"
 mkdir -p "$project/dist"
 make -C "$stage" -f Makefile.psp EBOOT.PBP 2>&1 | tee "$stage/build.log"
 if grep -qi 'could not fixup imports' "$stage/build.log"; then

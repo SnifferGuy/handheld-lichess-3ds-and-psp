@@ -13,29 +13,37 @@
 - Both PSP and 3DS packages now build with HTTPS enabled. PSP dependencies are installed from SHA-256-pinned official PSPDEV packages; `DEPENDENCIES.md` records versions and the CA bundle hash.
 - Expanded release fixtures pass: player-only chat, repeated identical messages without collapsing them, 100-message/140-character limits, UTF-8 fallback, QWERTY navigation, phrases requiring explicit Send, draft preservation on uncertain delivery and game completion, incoming moves while typing, postgame refresh, casual search, username challenges, incoming accept/decline, rematch challenges with swapped colors, and isolated postgame analysis with engine cancellation and repetition history. Requests use injected simulated services and never contact a real account.
 - Native-resolution captures include chat/keyboard/phrases, lobby/challenges/search, results and online analysis in both appearances. Desktop rendering checks cover both screen sizes and board orientations. Visual review corrected bottom-edge text clipping and verified the common three-dot chat bubble.
-- PKCE/callback/cancellation helper self-tests pass. Real browser OAuth, authenticated Lichess games/chat, sustained console HTTPS, latency behavior, sleep/resume and physical clock/result/memory checks remain pending.
+- PKCE/callback/cancellation helper self-tests pass. The sign-in helper completed browser OAuth and verified the account for each emulator's virtual card.
 - Emulator smoke tests booted the release binaries in PPSSPP 1.20.4 and Azahar 2126.2. The PSP build displayed the home menu. The 3DS build accepted touch input and opened the online lobby. These checks used no Lichess sign-in.
-- The Friends update passed all 16 desktop suites, including fragmented follows and the 1,000-account cap, presence decoding, controller and touch navigation, selection through refresh, follow reconciliation after a lost reply, unavailable usernames, unfollow confirmation, permission and rate-limit handling, and challenges in either direction. Friends tests use an injected service. Both HTTPS-enabled console packages were rebuilt.
+- All 17 desktop suites passed. Friends fixtures exercise bounded follows, presence, both interfaces, interrupted follow requests, permissions, and challenges. The connection check fixtures exercise response validation and retry backoff without an account token. Both HTTPS-enabled packages were rebuilt.
 - Public matchmaking fixtures passed in both handheld layouts. A 15+10 seek canceled before pairing, a seek closed without a game, and a later seek opened a game through a simulated game-start event. **Find opponent** retained focus for retry, and a rate-limited seek blocked immediate resubmission. Separately, a read-only HTTPS request from Windows to Lichess's public player-status endpoint returned HTTP 200 without an account.
+- Username challenges use the Lichess keep-alive stream. Fixtures cover fragmented invitations and keepalives, accepted, declined and canceled replies, closure without an outcome, and stopping or retrying an invite in both layouts. The account event stream still supplies the authoritative game start. These tests ran without a live signed-in account.
 
-## Physical consoles
+## Emulator acceptance
 
-Physical PSP-1000 and Old 3DS playtesting is pending. Before the first match, record the PSP firmware version, Old 3DS firmware version, access point band and security mode, and whether both consoles obtain IPv4 addresses. Confirm both builds launch from their normal homebrew menus.
+- **Azahar 2126.2** passed the public probe. The 3DS build displayed **Connected to the Lichess API** without signing in.
+- **PPSSPP 1.20.4** reached the live public API using the production transport in a PSP diagnostic build. The probe verified the emulated clock and identified an invalid default CA directory in the PSP curl package. The transport now uses the bundled CA file with certificate and hostname checks enabled.
+- Both production packages embed the new Cburnett knight icons and the launcher title **Lichess Handheld Chess**. The 3DS launcher metadata also includes the mode description and publisher label.
+- Signed-in diagnostics used the production HTTPS client on Azahar and PPSSPP. Account verification, Active Games, and loading the Friends list succeeded on both. The diagnostics recorded request outcomes only.
+- The player confirmed public matchmaking and live moves on both release builds. No account names or game identifiers were collected for the report.
+- The player confirmed that a private challenge between Azahar and PPSSPP succeeded, along with chat, Friends, and resuming the online game. The report records the outcomes only.
+- Emulator LAN diagnostics used the production game protocol and native sockets over localhost TCP. Each emulator hosted a 15+10 match while the other connected, disconnected before the first move, and recovered its session. Both sides replayed the same four half-moves and recorded Black winning by checkmate. The PSP listener fix reads the native socket error and sets nonblocking mode after binding. The desktop TCP regression suite passed with these changes.
 
-| Check | Expected result |
+| Check | Result or remaining verification |
 | --- | --- |
-| Play an offline game on each console | The board is readable, each promotion option is selectable, and controls stay responsive during Hard search. |
-| Switch appearance in a match and restart | Select switches immediately, preserves the position, and restores the saved appearance on restart. Check font and piece textures on the actual 3DS GPU. |
-| PSP hosts, then 3DS hosts | Each device can join by IPv4 address, submit moves, and see the same position and result through checkmate or resignation. |
-| Network drops before sending a move | After reconnect, the host's previous position is restored and the player can choose the move again. |
-| Network drops just after a move is accepted | After reconnect, the move appears once, with the correct turn. |
-| Network drops while the guest chooses a promotion | Reconnect restores the last accepted position. Complete promotion and confirm both boards show the chosen piece. |
-| Sleep and wake either console | The game resumes if the original host stays open and Wi-Fi returns at the same address. |
-| Play an existing Lichess game in an HTTPS-enabled build | Both colors and every promotion work. Confirm the board changes only after the server update, clocks continue during requests, and interrupted submissions synchronize without an automatic resend. |
-| Find a public opponent from each handheld | Open **Online lobby → Find opponent** at 15+10, cancel once, then search again and complete a casual game. Confirm the game appears in the player's Lichess history. |
+| Play offline with Hard AI in each emulator | Passed in native diagnostic builds. The game accepted a human move and a Hard AI reply, paused both clocks in the action menu, resumed the menu, and processed resignation. Desktop checks cover selecting all four promotions. |
+| Switch appearance in a match and reload saved settings | Passed in both emulators. Changing appearance preserved the position and clocks. A fresh application instance loaded the expected appearance from the virtual card. |
+| PSP hosts, then 3DS hosts | Passed through checkmate in both directions using isolated emulator LAN diagnostics. |
+| Network drops before sending a move | Passed in both directions. The guest recovered the session before both players submitted a move. |
+| Network drops just after a move is accepted | Passed in both emulator hosting directions. The diagnostic interrupted the accepted move's reply. The guest restored the accepted move exactly once, and both peers finished the same game. The desktop TCP loopback suite also covers this case with the host playing either color. |
+| Network drops before the guest submits a promotion | Passed in both emulator hosting directions. The LAN diagnostic interrupted the guest before submitting the promotion. After reconnect, both peers agreed on the position and the promoted pieces. The interactive promotion menu is covered by the desktop interface suite. |
+| Interrupt and restore an emulator's connection | LAN interruption tests passed through the production reconnect path. Emulator power and network interruption events remain separate from these injected connection drops. |
+| Resume an existing Lichess game | Passed by player report in the private emulator playtest. Desktop fixtures cover both colors, all promotions, authoritative clock updates, and interrupted submissions. |
+| Find a public opponent from each emulator | Passed by player report. Both builds paired and played moves. Search cancellation and retry are also covered by desktop fixtures. |
 | Exercise online match actions | Cancel and confirm resignation; offer, accept and decline draws/takebacks. Check the server's position, history and clocks after acceptance. Deliver offers while navigating menus and interrupt requests around acceptance. |
-| Play a PC browser opponent on each handheld | Use two Lichess accounts. Send and accept a timed casual standard challenge in both directions. Complete a game with each handheld and compare the move history and result with the browser. |
-| Sync Lichess follows between PC and both handhelds | Reauthorize existing card credentials with the current helper. Follow and unfollow from each handheld, check the website, then change a follow on the website and refresh each console's list. |
-| Claim a draw after reconnecting and request rematch | Draw eligibility survives reconnect. Both players must accept a rematch and then play opposite colors. |
+| Send an online challenge between the emulators | The private challenge passed by player report. Desktop fixtures cover incoming and outgoing challenges, cancellation, and declines in both layouts. |
+| Use live chat | Passed by player report. Desktop fixtures cover interrupted submissions, composition during a move, and postgame refresh. |
+| Sync Lichess follows | Friends passed in the private playtest, and both emulator diagnostics loaded the live list. Desktop fixtures cover follow, unfollow, and refreshing after a lost reply. |
+| Claim a draw after reconnecting and request rematch | Passed in both emulator hosting directions. The peers agreed to a draw and a rematch, then swapped colors. The guest disconnected at a threefold position, reconnected, and successfully claimed a draw. |
 
 For a short checkmate test, use 1. f3 e5 2. g4 Qh4#. For repetition, play 1. Nf3 Nf6 2. Ng1 Ng8 twice and test **Claim draw**.

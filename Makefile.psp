@@ -13,6 +13,7 @@ BUILD_PRX := 1
 # Keep the base PSP's memory layout on all models.
 PSP_LARGE_MEMORY := 0
 EXTRA_TARGETS := EBOOT.PBP
-PSP_EBOOT_TITLE := Lichess Handheld
+PSP_EBOOT_TITLE := Lichess Handheld Chess
+PSP_EBOOT_ICON := icon-psp.png
 PSPSDK ?= $(shell psp-config --pspsdk-path)
 include $(PSPSDK)/lib/build.mak

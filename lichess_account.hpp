@@ -9,6 +9,11 @@
 
 namespace handheld {
 enum class AccountCheck { Verified, Rejected, RateLimited, InvalidReply, Failed };
+enum class LichessConnection { Reachable, DnsFailed, CaFileFailed, CertificateFailed, TlsFailed, RateLimited, InvalidReply, Failed };
+struct ConnectionResult {
+    LichessConnection status=LichessConnection::Failed;
+    std::string tlsCode;
+};
 struct AccountProfile {
     AccountCheck status=AccountCheck::Failed;
     std::string username;
@@ -79,6 +84,8 @@ public:
     bool complete() const { return started && board.finished && line.empty(); }
 };
 bool accountHttpsAvailable();
+bool validLichessStatusReply(std::string_view json);
+ConnectionResult testLichessConnection(const char* caPath,const std::atomic<bool>& cancelled);
 std::string accountUsername(std::string_view json);
 std::optional<std::vector<ActiveGame>> parseActiveGames(std::string_view json);
 AccountProfile verifyLichessAccount(const std::string& token,const char* caPath,
@@ -103,5 +110,6 @@ struct LichessService {
     decltype(&streamGameBoard) stream=streamGameBoard;
     decltype(&postBoardMove) move=postBoardMove;
     decltype(&postBoardAction) action=postBoardAction;
+    decltype(&testLichessConnection) connection=testLichessConnection;
 };
 }

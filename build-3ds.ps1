@@ -35,7 +35,8 @@ $smdh = Join-Path $build 'HandheldChess.smdh'
 $artifact = Join-Path $dist 'HandheldChess.3dsx'
 & $tool @arch '-specs=3dsx.specs' '-Wl,--gc-sections' @objects "-L$ctr\lib" @onlineLink -lcitro2d -lcitro3d -lctru -lm -o $elf
 if ($LASTEXITCODE) { throw '3DS link failed' }
-& $smdhTool --create 'Lichess Handheld' 'Online, LAN and offline chess' 'Handheld homebrew project' "$ctr\default_icon.png" $smdh
+$icon = Join-Path $PSScriptRoot 'assets/icon-3ds.png'
+& $smdhTool --create 'Lichess Handheld Chess' 'Lichess online, LAN and offline chess' 'Lichess Handheld contributors' $icon $smdh
 if ($LASTEXITCODE) { throw '3DS metadata generation failed' }
 & $pack $elf $artifact "--smdh=$smdh"
 if ($LASTEXITCODE) { throw '3DS packaging failed' }

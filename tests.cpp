@@ -666,16 +666,20 @@ struct FakeOnline {
     std::atomic<bool> releasePost{false};
     std::atomic<bool> incomingOffer{false}, offerDelivered{false};
     std::vector<handheld::ChatMessage> chatHistory{{"Opponent","Good game"},{"Opponent","Good game"}};
-    std::atomic<unsigned> historyCalls{0},chatSends{0},eventConnections{0},lobbyCalls{0},seekCancellations{0};
+    std::atomic<unsigned> historyCalls{0},chatSends{0},eventConnections{0},lobbyCalls{0},seekCancellations{0},inviteCancellations{0};
     handheld::PostResult chatResult=handheld::PostResult::Accepted;
     std::string sentChat;
     handheld::LobbyRequest lastLobby;
     handheld::FriendRequest lastFriendRequest;
     std::atomic<unsigned> friendCalls{0};
+    std::atomic<unsigned> connectionCalls{0};
+    handheld::LichessConnection connectionStatus=handheld::LichessConnection::Reachable;
     std::vector<handheld::Friend> followed;
     handheld::AccountCheck friendStatus=handheld::AccountCheck::Verified;
     bool lostFriendReply=false;
     std::atomic<FakeSeek> seek{FakeSeek::Pending};
+    std::atomic<bool> holdInvite{false};
+    handheld::InvitationEnd invitationResult=handheld::InvitationEnd::Accepted;
     std::atomic<bool> gameReady{false},injectMove{false},moveDelivered{false},finishGame{false},endDelivered{false};
     bool initialChallenge=false;
 };
@@ -770,8 +774,13 @@ handheld::LobbyReply fakeLobby(const handheld::LobbyRequest& request,const std::
         if (cancelled.load()) { ++fakeOnline->seekCancellations; return {AccountCheck::Failed,{}}; }
         if (fakeOnline->seek.load()==FakeSeek::RateLimited) return {AccountCheck::RateLimited,{}};
         if (fakeOnline->seek.load()==FakeSeek::Matched) fakeOnline->gameReady.store(true);
+    } else if (request.action==LobbyAction::Challenge) {
+        while (!cancelled.load() && fakeOnline->holdInvite.load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (cancelled.load()) { ++fakeOnline->inviteCancellations; return {AccountCheck::Failed}; }
+        return {AccountCheck::Verified,fakeOnline->invitationResult};
     } else if (request.action==LobbyAction::Accept) fakeOnline->gameReady.store(true);
-    return {AccountCheck::Verified,request.action==LobbyAction::Challenge?"QwEr1234":""};
+    return {AccountCheck::Verified};
 }
 handheld::FriendReply fakeFriends(const handheld::FriendRequest& request,const std::string&,const char*,
                                   const std::atomic<bool>&) {
@@ -825,6 +834,10 @@ void friendsModels() {
     CHECK(bounded.truncated && bounded.players.size()==1000);
     std::cout<<"PASS bounded friends list, fragmented NDJSON, presence and follow request paths\n";
 }
+handheld::ConnectionResult fakeConnection(const char*,const std::atomic<bool>&) {
+    ++fakeOnline->connectionCalls;
+    return {fakeOnline->connectionStatus,{}};
+}
 void extraModels() {
     using namespace handheld;
     CHECK(safeText("caf\xc3\xa9 \xf0\x9f\x98\x80")=="caf? ?");
@@ -852,9 +865,25 @@ void extraModels() {
     editor={}; std::string draft(140,'a'); editor.insert(draft); CHECK(draft.size()==140);
     editor.selected=43; editor.insert(draft); CHECK(draft.size()==139);
     CHECK(lobbyRequest({LobbyAction::Seek,{},15,10,-1})->second=="rated=false&variant=standard&time=15&increment=10");
-    CHECK(lobbyRequest({LobbyAction::Challenge,"Player_1",10,0,1})->second.find("color=black")!=std::string::npos);
+    CHECK(lobbyRequest({LobbyAction::Challenge,"Player_1",10,0,1})->second==
+        "rated=false&variant=standard&color=black&clock.limit=600&clock.increment=0&keepAliveStream=true");
     CHECK(!lobbyRequest({LobbyAction::Challenge,"../escape",15,10,-1}));
     CHECK(!lobbyRequest({LobbyAction::Seek,{},1,0,-1}));
+    for (const auto& status:{std::pair{"accepted",InvitationEnd::Accepted},
+                            std::pair{"declined",InvitationEnd::Declined},std::pair{"canceled",InvitationEnd::Canceled}}) {
+        InvitationStream stream;
+        CHECK(stream.feed("{\"challenge\":{\"id\":\"QwEr"));
+        CHECK(stream.feed("1234\"}}\r\n\n{\"do"));
+        CHECK(stream.feed(std::string("ne\":\"")+status.first+"\"}"));
+        CHECK(stream.finish()==status.second);
+    }
+    InvitationStream closed;
+    CHECK(closed.feed("{\"id\":\"QwEr1234\"}\n\n"));
+    CHECK(closed.finish()==InvitationEnd::Closed);
+    InvitationStream invalid;
+    CHECK(invalid.feed("{\"id\":\"QwEr1234\"}\n"));
+    CHECK(!invalid.feed("{\"done\":\"unexpected\"}\n"));
+    CHECK(!InvitationStream{}.feed(std::string(32769,'x')));
     std::vector<AccountEvent> events;
     const auto receive=[](void* out,const AccountEvent& e){static_cast<std::vector<AccountEvent>*>(out)->push_back(e);};
     AccountEventDecoder decoder;
@@ -1154,6 +1183,37 @@ struct OnlineHarness {
     void setup() { using namespace handheld; for (int n=0;n<3;++n) press(Down); press(Confirm); }
     void activeGame() { using namespace handheld; setup(); press(Down); press(Confirm); settle(); press(Confirm); until([]{return fakeOnline->streams.load()>0;}); }
 };
+void connectionInterface() {
+    using namespace handheld;
+    CHECK(validLichessStatusReply(R"([{"name":"Lichess","id":"lichess","online":true}])"));
+    CHECK(validLichessStatusReply(R"([{"id":"lichess"}])"));
+    CHECK(!validLichessStatusReply(R"([{"id":"other"}])"));
+    CHECK(!validLichessStatusReply(R"({"id":"lichess"})"));
+    CHECK(!validLichessStatusReply(R"([{"id":"lichess"}]trailing)"));
+    LichessService service; service.available=fakeAvailable; service.connection=fakeConnection;
+    for (bool dual:{false,true}) {
+        for (auto status:{LichessConnection::Reachable,LichessConnection::TlsFailed,LichessConnection::RateLimited}) {
+            FakeOnline server; fakeOnline=&server; server.connectionStatus=status;
+            App app(nullptr,nullptr,nullptr,service); // No local account credential.
+            OnlineHarness h{app,dual,"lichess-connection"};
+            h.setup();
+            if (dual) app.update({0,28,174},dual);
+            else {
+                for (int n=0;n<4;++n) h.press(Down);
+                h.press(Confirm);
+            }
+            h.until([&]{return server.connectionCalls.load()==1;});
+            h.settle();
+            if (status==LichessConnection::RateLimited) {
+                h.render("rate-limited");
+                h.press(Confirm); h.settle();
+                CHECK(server.connectionCalls.load()==1);
+            } else h.render(status==LichessConnection::Reachable?"reachable":"tls-failed");
+        }
+    }
+    fakeOnline=nullptr;
+    std::cout<<"PASS token-free Lichess connection check, reply validation and retry backoff\n";
+}
 void friendsInterface() {
     using namespace handheld;
     const std::string credential=std::string(std::getenv("HANDHELD_TEST_DIR"))+"/fake-friends-token.txt";
@@ -1294,10 +1354,20 @@ void onlineReleaseUI() {
                 server.seek.store(FakeSeek::Matched);
                 h.until([&]{return server.streams.load()==1;}); h.render("paired");
             } else if (scenario==1) {
+                server.holdInvite.store(true);
                 h.press(Down); h.press(Down); h.press(Confirm); h.render("username");
                 h.sendFrom(h.type("bb"));
-                h.until([&]{return server.lobbyCalls.load()==1;}); h.settle(); h.render("challenge-sent");
+                h.until([&]{return server.lobbyCalls.load()==1;}); h.settle(); h.render("invite-pending");
                 CHECK(server.lastLobby.target=="bb");
+                h.press(Back);
+                CHECK(server.inviteCancellations.load()==1 && server.streams.load()==0);
+                h.render("invite-closed");
+                server.invitationResult=InvitationEnd::Declined;
+                server.holdInvite.store(false);
+                h.press(Confirm);
+                h.sendFrom(0);
+                h.until([&]{return server.lobbyCalls.load()==2;}); h.settle(); h.render("invite-declined");
+                CHECK(server.lastLobby.target=="bb" && server.streams.load()==0);
             } else if (scenario<=3) {
                 for (int n=0;n<3;++n) h.press(Down);
                 h.press(Confirm); h.render("incoming"); h.press(Confirm); h.render("challenge-actions");
@@ -1356,6 +1426,7 @@ int main() {
     onlineActionInterface();
     extraModels();
     friendsModels();
+    connectionInterface();
     friendsInterface();
     onlineReleaseUI();
 }

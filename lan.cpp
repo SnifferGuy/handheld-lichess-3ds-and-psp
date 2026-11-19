@@ -13,6 +13,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
+#ifdef __PSP__
+#include <pspnet_inet.h>
+#endif
 
 namespace chess {
 namespace {
@@ -35,8 +38,15 @@ bool nonblocking(Socket s) {
     return flags>=0 && fcntl(s,F_SETFL,flags|O_NONBLOCK)==0;
 #endif
 }
-bool again() { return errno==EWOULDBLOCK || errno==EAGAIN || errno==EINPROGRESS ||
-    errno==EALREADY || errno==EINTR; }
+bool again() {
+#ifdef __PSP__
+    // The PSP libc accept wrapper can report ENOENT for a pending connection.
+    const int e=sceNetInetGetErrno();
+#else
+    const int e=errno;
+#endif
+    return e==EWOULDBLOCK || e==EAGAIN || e==EINPROGRESS || e==EALREADY || e==EINTR;
+}
 #endif
 Socket openSocket() {
     const Socket s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
@@ -174,12 +184,14 @@ bool Lan::receive(const Bytes& payload) {
     return false;
 }
 void Lan::startListener() {
-    listener=openSocket();
+    listener=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
     if (listener==invalid) return;
     const int yes=1;
     setsockopt(listener,SOL_SOCKET,SO_REUSEADDR,reinterpret_cast<const char*>(&yes),sizeof(yes));
     const auto a=endpoint({});
-    if (bind(listener,reinterpret_cast<const sockaddr*>(&a),sizeof(a))!=0 || listen(listener,1)!=0) {
+    // PPSSPP's bind can change the native socket's blocking mode.
+    if (bind(listener,reinterpret_cast<const sockaddr*>(&a),sizeof(a))!=0 ||
+        listen(listener,1)!=0 || !nonblocking(listener)) {
         closeSocket(listener);
         listener=invalid;
     }
@@ -213,7 +225,14 @@ void Lan::tick(uint64_t now) {
             nextConnect=now+1000;
         }
         if (peer==invalid && listener!=invalid) {
-            peer=accept(listener,nullptr,nullptr);
+            // PPSSPP forwards a native address buffer even if the game passes nullptr.
+            sockaddr_in remote{};
+#ifdef _WIN32
+            int remoteLength=sizeof(remote);
+#else
+            socklen_t remoteLength=sizeof(remote);
+#endif
+            peer=accept(listener,reinterpret_cast<sockaddr*>(&remote),&remoteLength);
             if (peer!=invalid) {
                 if (!nonblocking(peer)) disconnect();
                 lastRx=now;

@@ -11,8 +11,8 @@ constexpr char appTitle[]="Lichess Handheld";
 constexpr int menuTop=50, menuRow=29;
 constexpr int activeFooter=198;
 constexpr int friendsView=4, addFriendView=5, friendActionsView=6, unfollowView=7;
-constexpr int friendsLobbyOption=6, friendControls=4;
-constexpr int findOpponentOption=1;
+constexpr int friendsLobbyOption=5, friendControls=4;
+constexpr int findOpponentOption=1, challengePlayerOption=2;
 constexpr int controlsTop(bool dual) { return dual?104:132; }
 constexpr int controlsRow(bool dual) { return dual?29:20; }
 constexpr int visibleActions(bool dual) { return dual?4:6; }
@@ -201,7 +201,7 @@ std::vector<std::string> App::menuItems() const {
     if (page==Appearance) return {"Dark","Light","Back"};
     if (page==LichessSetup) {
         if (confirmingSignOut) return {"Cancel","Remove credential"};
-        if (lichess.available()) return {"Verify account","Active games","Online lobby","Local sign out","Back"};
+        if (lichess.available()) return {"Verify account","Active games","Online lobby","Local sign out","Test connection","Back"};
         return {"Check card","Local sign out","Back"};
     }
     if (page==LichessGames) {
@@ -264,6 +264,11 @@ void App::stopLobby() {
 }
 void App::enterLobby() {
     stopAccountCheck(); stopLobby();
+    std::string token;
+    if (readCredential(credentialPath,token)!=CredentialStatus::Present) {
+        page=LichessSetup; option=2; notice="Sign in to play in the Lichess lobby.";
+        return;
+    }
     page=LichessLobby; lobbyView=0; option=0; challenges.clear(); announcedGame.reset();
     eventRead.store(0); eventWrite.store(0); eventsRetryAt=0;
     eventsDeadline=milliseconds()+20000; notice="Connecting to Lichess...";
@@ -279,7 +284,7 @@ void App::openOnlineGame(ActiveGame game) {
 }
 void App::queueLobby(LobbyRequest request) {
     if (checkingAccount || lobbyPending || milliseconds()<accountRetryAt) { notice="Please wait before another request."; return; }
-    if (request.action==LobbyAction::Seek) option=0;
+    if (request.action==LobbyAction::Seek || request.action==LobbyAction::Challenge) option=0;
     lobbyCommand=std::move(request); lobbyPending=true; notice="Waiting for account stream...";
 }
 void App::queueFriends(FriendRequest request) {
@@ -400,8 +405,7 @@ void App::tickLobby() {
             if (found==challenges.end() && challenges.size()<16) challenges.push_back(event.challenge);
         } else if (event.kind==AccountEventKind::ChallengeRemoved) {
             challenges.erase(std::remove_if(challenges.begin(),challenges.end(),[&](const Challenge& c){return c.id==event.challenge.id;}),challenges.end());
-            if (outgoingChallenge==event.challenge.id) outgoingChallenge.clear();
-            if (selectedChallenge==event.challenge.id) { lobbyView=1; option=0; }
+            if (lobbyView==2 && selectedChallenge==event.challenge.id) { lobbyView=1; option=0; }
         }
     }
     if (announcedGame) { auto game=*announcedGame; announcedGame.reset(); openOnlineGame(std::move(game)); return; }
@@ -414,13 +418,18 @@ void App::tickLobby() {
         stopAccountCheck();
         if (friendCommand) applyFriendsReply(now);
         else if (lobbyReply.status==AccountCheck::Verified) {
-            if (!lobbyReply.challengeId.empty()) outgoingChallenge=lobbyReply.challengeId;
             switch (lobbyCommand.action) {
                 case LobbyAction::Seek: notice="Search ended. Find opponent to retry."; break;
-                case LobbyAction::Challenge: notice="Challenge sent. Waiting for opponent."; break;
+                case LobbyAction::Challenge:
+                    switch (lobbyReply.invitation) {
+                        case InvitationEnd::Accepted: notice="Invite accepted. Opening game..."; break;
+                        case InvitationEnd::Declined: notice="Invite declined."; break;
+                        case InvitationEnd::Canceled: notice="Invite canceled by Lichess."; break;
+                        case InvitationEnd::Closed: notice="Invite ended. Check Active games or retry."; break;
+                    }
+                    break;
                 case LobbyAction::Accept: notice="Challenge accepted. Opening game..."; break;
                 case LobbyAction::Decline: notice="Challenge declined."; break;
-                case LobbyAction::Cancel: notice="Challenge canceled."; break;
             }
             if (lobbyCommand.action==LobbyAction::Decline || lobbyCommand.action==LobbyAction::Accept) { lobbyView=1; option=0; }
         } else if (lobbyReply.status==AccountCheck::RateLimited) { accountRetryAt=now+60000; notice="Rate limited. Wait one minute."; }
@@ -438,7 +447,8 @@ void App::tickLobby() {
 }
 std::vector<std::string> App::lobbyItems() const {
     if (friendCommand || lobbyView==friendsView) return {};
-    if (checkingAccount || lobbyPending) return {lobbyCommand.action==LobbyAction::Seek?"Cancel search":"Cancel request"};
+    if (checkingAccount || lobbyPending) return {lobbyCommand.action==LobbyAction::Seek?"Cancel search":
+        lobbyCommand.action==LobbyAction::Challenge?"Stop waiting":"Cancel request"};
     if (lobbyView==1) {
         std::vector<std::string> rows;
         for (const auto& challenge:challenges) rows.push_back(challenge.user);
@@ -448,11 +458,14 @@ std::vector<std::string> App::lobbyItems() const {
     if (lobbyView==friendActionsView) return {"Challenge","Unfollow","Back"};
     if (lobbyView==unfollowView) return {"Cancel","Confirm unfollow"};
     return {std::string("Clock: ")+clockNames[lobbyClock],"Find opponent","Challenge player",
-        "Incoming ("+std::to_string(challenges.size())+")","Active games","Cancel challenge","Friends","Back"};
+        "Incoming ("+std::to_string(challenges.size())+")","Active games","Friends","Back"};
 }
 void App::updateLobby(Input i,bool dual) {
     const bool updatingFriends=friendCommand.has_value();
-    const bool searching=!updatingFriends && (checkingAccount || lobbyPending) && lobbyCommand.action==LobbyAction::Seek;
+    const bool waiting=!updatingFriends && (checkingAccount || lobbyPending);
+    const bool searching=waiting && lobbyCommand.action==LobbyAction::Seek;
+    const bool inviting=waiting && lobbyCommand.action==LobbyAction::Challenge;
+    const int returnOption=lobbyView==0?(searching?findOpponentOption:inviting?challengePlayerOption:0):0;
     const auto before=lobbyItems(); const auto focus=option<int(before.size())?before[option]:std::string{};
     tickLobby(); if (page!=LichessLobby) return;
     if (updatingFriends) {
@@ -484,7 +497,7 @@ void App::updateLobby(Input i,bool dual) {
     const auto rows=lobbyItems();
     if (rows!=before) {
         const auto found=std::find(rows.begin(),rows.end(),focus);
-        option=searching && lobbyView==0?findOpponentOption:found==rows.end()?0:int(found-rows.begin());
+        option=found==rows.end()?returnOption:int(found-rows.begin());
         return;
     }
     const bool back=pressed(i,Back);
@@ -501,8 +514,8 @@ void App::updateLobby(Input i,bool dual) {
     if (!back && (option>=int(rows.size()) || (!hit && !pressed(i,Confirm)))) return;
     if (checkingAccount || lobbyPending) {
         lobbyPending=false; stopAccountCheck();
-        option=searching && lobbyView==0?findOpponentOption:0;
-        notice=searching?"Search canceled.":"Request canceled.";
+        option=returnOption;
+        notice=searching?"Search canceled.":inviting?"Invite closed. It may take a moment to expire.":"Request canceled.";
         return;
     }
     if (lobbyView==1) {
@@ -522,13 +535,10 @@ void App::updateLobby(Input i,bool dual) {
         else { lobbyView=friendsView; option=0; queueFriends({FriendAction::Unfollow,selectedFriend}); }
     } else if (option==0) lobbyClock=(lobbyClock+1)%3;
     else if (option==findOpponentOption) queueLobby({LobbyAction::Seek,{},clockMinutes[lobbyClock],lobbyClock==0?10u:0u,-1});
-    else if (option==2) { lobbyView=3; editor={}; }
+    else if (option==challengePlayerOption) { lobbyView=3; editor={}; }
     else if (option==3) { lobbyView=1; option=0; }
     else if (option==4) { stopLobby(); page=LichessGames; startAccountCheck(); }
-    else if (option==5) {
-        if (outgoingChallenge.empty()) notice="No outgoing challenge.";
-        else { queueLobby({LobbyAction::Cancel,outgoingChallenge,15,10,-1}); outgoingChallenge.clear(); }
-    } else if (option==friendsLobbyOption) {
+    else if (option==friendsLobbyOption) {
         lobbyView=friendsView; friendOption=0; queueFriends({});
     } else returnToLichessSetup();
 }
@@ -591,7 +601,8 @@ void App::accountEntry(void* arg) {
                 receiveLiveBoard,&app,&app.interruptStream,receiveChat,&app);
             if (app.cancelled.load() || (!app.pendingRequest.load() && !app.pendingChat.load())) break;
         }
-    } else if (app.page==LichessGames) app.accountGames=app.lichess.games(app.accountToken,app.caPath,app.cancelled);
+    } else if (app.testingConnection) app.connectionResult=app.lichess.connection(app.caPath,app.cancelled);
+    else if (app.page==LichessGames) app.accountGames=app.lichess.games(app.accountToken,app.caPath,app.cancelled);
     else app.accountResult=app.lichess.verify(app.accountToken,app.caPath,app.cancelled);
     app.done.store(true,std::memory_order_release);
 }
@@ -783,7 +794,7 @@ void App::drawChat(bool dual) const {
     const int y=dual?176:202;
     for (int n=0;n<4;++n) button(16+(n%2)*half,y+(n/2)*30,half-2,28,labels[n],t,chatOption==n);
 }
-void App::startAccountCheck() {
+void App::startAccountCheck(bool testConnection) {
     if (checkingAccount || wifiDeadline) {
         notice=checkingAccount?"Checking with Lichess...":"Connecting to Wi-Fi...";
         return;
@@ -795,7 +806,8 @@ void App::startAccountCheck() {
     if (page==LichessPreview) { streamSynchronized=false; streamRetryAt=0; }
     if (!lichess.available()) checkCredential();
     else if (milliseconds()<accountRetryAt) notice="Please wait before retrying.";
-    else if (readCredential(credentialPath,accountToken)==CredentialStatus::Present) {
+    else if (testConnection || readCredential(credentialPath,accountToken)==CredentialStatus::Present) {
+        testingConnection=testConnection;
         wifiDeadline=milliseconds()+20000;
         notice="Connecting to Wi-Fi...";
     } else checkCredential();
@@ -815,6 +827,7 @@ void App::stopAccountCheck() {
         joinWorker();
         checkingAccount=false;
     }
+    testingConnection=false;
     accountToken.clear();
     if (auto* unsent=pendingChat.exchange(nullptr)) {
         if (unsent->send) chat.completeSend(PostResult::Rejected);
@@ -844,6 +857,7 @@ void App::tickAccount() {
         notice=checkingAccount?(page==LichessPreview?"Connecting to game...":"Checking with Lichess..."):
             "Could not start Lichess request.";
         if (!checkingAccount) accountToken.clear();
+        if (!checkingAccount) testingConnection=false;
     }
     const bool complete=checkingAccount && done.load(std::memory_order_acquire);
     if (page==LichessPreview) {
@@ -882,7 +896,23 @@ void App::tickAccount() {
         return;
     }
     if (!complete) return;
+    const bool testedConnection=testingConnection;
     stopAccountCheck();
+    if (testedConnection) {
+        switch (connectionResult.status) {
+            case LichessConnection::Reachable: notice="Connected to the Lichess API."; break;
+            case LichessConnection::DnsFailed: notice="Could not find lichess.org. Check DNS."; break;
+            case LichessConnection::CaFileFailed: notice="Check cacert.pem beside the game."; break;
+            case LichessConnection::CertificateFailed: notice="Certificate rejected. Check the clock and CA."; break;
+            case LichessConnection::TlsFailed: notice=connectionResult.tlsCode.empty()?"TLS handshake failed.":
+                "TLS handshake failed ("+connectionResult.tlsCode+")."; break;
+            case LichessConnection::RateLimited:
+                accountRetryAt=now+60000; notice="Lichess rate limit. Retry in one minute."; break;
+            case LichessConnection::InvalidReply: notice="Unexpected reply from the Lichess API."; break;
+            case LichessConnection::Failed: notice="Could not reach Lichess. Check Wi-Fi."; break;
+        }
+        return;
+    }
     const bool listing=page==LichessGames;
     switch (listing?accountGames.status:accountResult.status) {
         case AccountCheck::Verified:
@@ -985,7 +1015,8 @@ void App::activate(int item) {
             confirmingSignOut=true;
             option=0;
             notice="Remove this card's sign-in file?";
-        } else leave();
+        } else if (item==4 && lichess.available()) startAccountCheck(true);
+        else leave();
         return;
     }
     if (page==Computer && item==0) { difficulty=Difficulty((int(difficulty)+1)%3); return; }

@@ -214,6 +214,42 @@ std::optional<std::string> friendMutationPath(const FriendRequest& request) {
     if (request.action==FriendAction::Refresh || !validUsername(request.username)) return std::nullopt;
     return std::string(request.action==FriendAction::Follow?"/api/rel/follow/":"/api/rel/unfollow/")+usernameKey(request.username);
 }
+bool InvitationStream::consume() {
+    if (line.find_first_not_of(" \t\r")==std::string::npos) return true;
+    picojson::value root;
+    if (!serviceJson(line,root) || !root.is<picojson::object>() || result!=InvitationEnd::Closed) return false;
+    if (!started) {
+        const auto& challenge=root.get("challenge").is<picojson::object>()?root.get("challenge"):root;
+        const auto& id=challenge.get("id");
+        started=id.is<std::string>() && boardMovePath(id.get<std::string>(),{12,28,0}).has_value();
+        return started;
+    }
+    const auto& done=root.get("done");
+    if (!done.is<std::string>()) return false;
+    const auto& value=done.get<std::string>();
+    if (value=="accepted") result=InvitationEnd::Accepted;
+    else if (value=="declined") result=InvitationEnd::Declined;
+    else if (value=="canceled") result=InvitationEnd::Canceled;
+    else return false;
+    return true;
+}
+bool InvitationStream::feed(std::string_view bytes) {
+    while (!bytes.empty()) {
+        const auto newline=bytes.find('\n');
+        const auto piece=bytes.substr(0,newline);
+        if (piece.size()>32768-line.size()) return false;
+        line.append(piece);
+        if (newline==std::string_view::npos) break;
+        if (!consume()) return false;
+        line.clear();
+        bytes.remove_prefix(newline+1);
+    }
+    return true;
+}
+std::optional<InvitationEnd> InvitationStream::finish() {
+    if (!consume() || !started) return std::nullopt;
+    return result;
+}
 std::optional<std::pair<std::string,std::string>> lobbyRequest(const LobbyRequest& request) {
     std::string path,body;
     if (request.action==LobbyAction::Seek || request.action==LobbyAction::Challenge) {
@@ -225,11 +261,12 @@ std::optional<std::pair<std::string,std::string>> lobbyRequest(const LobbyReques
         } else {
             if (!validUsername(request.target)) return std::nullopt;
             path="/api/challenge/"+request.target;
-            body+="&clock.limit="+std::to_string(request.minutes*60)+"&clock.increment="+std::to_string(request.increment);
+            body+="&clock.limit="+std::to_string(request.minutes*60)+"&clock.increment="+std::to_string(request.increment)+
+                "&keepAliveStream=true";
         }
     } else {
         if (!boardMovePath(request.target,{12,28,0})) return std::nullopt;
-        path="/api/challenge/"+request.target+(request.action==LobbyAction::Accept?"/accept":request.action==LobbyAction::Decline?"/decline":"/cancel");
+        path="/api/challenge/"+request.target+(request.action==LobbyAction::Accept?"/accept":"/decline");
     }
     return std::make_pair(path,body);
 }

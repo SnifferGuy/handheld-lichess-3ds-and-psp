@@ -1,14 +1,11 @@
 #include "lichess_account.hpp"
 #include "online_extra.hpp"
+#include "service_json.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <utility>
 #include <cstring>
-
-#define PICOJSON_ASSERT(test) do { if (!(test)) std::abort(); } while (false)
-#define PICOJSON_USE_LOCALE 0
-#include "picojson.hpp"
 
 namespace {
 constexpr size_t maxAccountBytes=262144, maxStreamBytes=32768;
@@ -400,25 +397,30 @@ bool accountHttpsAvailable() {
 static AccountCheck lichessGet(const char* url,const std::string& token,const char* caPath,
                                const std::atomic<bool>& cancelled,WriteBody writer,void* body,
                                bool streaming=false,const std::atomic<bool>* interrupted=nullptr,
-                               bool post=false,long* responseCode=nullptr,const char* postBody="") {
+                               bool post=false,long* responseCode=nullptr,const char* postBody="",
+                               ConnectionResult* connectionFailure=nullptr) {
 #ifdef HANDHELD_CURL
     if (!caPath || cancelled.load() || !accountHttpsAvailable())
         return AccountCheck::Failed;
     auto* curl=curl_easy_init();
     long status=0;
     CURLcode result=CURLE_FAILED_INIT;
+    char error[CURL_ERROR_SIZE]{};
     TransferProgress progress{cancelled,interrupted,streaming,milliseconds()};
     if (curl) {
         const auto authorization="Authorization: Bearer "+token;
-        auto* headers=curl_slist_append(nullptr,authorization.c_str());
-        if (headers) {
+        auto* headers=token.empty()?nullptr:curl_slist_append(nullptr,authorization.c_str());
+        if (token.empty() || headers) {
             curl_easy_setopt(curl,CURLOPT_URL,url);
             curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
             curl_easy_setopt(curl,CURLOPT_CAINFO,caPath);
+            // The PSP curl port defaults to a Unix CA directory that does not exist on the console.
+            curl_easy_setopt(curl,CURLOPT_CAPATH,static_cast<const char*>(nullptr));
             curl_easy_setopt(curl,CURLOPT_SSL_VERIFYPEER,1L);
             curl_easy_setopt(curl,CURLOPT_SSL_VERIFYHOST,2L);
             curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);
             curl_easy_setopt(curl,CURLOPT_FAILONERROR,1L);
+            if (connectionFailure) curl_easy_setopt(curl,CURLOPT_ERRORBUFFER,error);
             if (post) {
                 curl_easy_setopt(curl,CURLOPT_POST,1L);
                 curl_easy_setopt(curl,CURLOPT_POSTFIELDS,postBody);
@@ -440,6 +442,21 @@ static AccountCheck lichessGet(const char* url,const std::string& token,const ch
         curl_slist_free_all(headers);
     }
     if (responseCode) *responseCode=status;
+    if (connectionFailure) {
+        if (result==CURLE_COULDNT_RESOLVE_HOST) connectionFailure->status=LichessConnection::DnsFailed;
+        else if (result==CURLE_SSL_CACERT_BADFILE) connectionFailure->status=LichessConnection::CaFileFailed;
+        else if (result==CURLE_PEER_FAILED_VERIFICATION) connectionFailure->status=LichessConnection::CertificateFailed;
+        else if (result==CURLE_SSL_CONNECT_ERROR) {
+            connectionFailure->status=LichessConnection::TlsFailed;
+            const std::string_view message(error);
+            const auto marker=message.find("-0x");
+            if (marker!=std::string_view::npos) {
+                auto digits=message.substr(marker+3,4);
+                if (digits.size()==4 && digits.find_first_not_of("0123456789ABCDEFabcdef")==std::string_view::npos)
+                    connectionFailure->tlsCode=std::string(message.substr(marker,7));
+            }
+        }
+    }
     if (result==CURLE_OK && status==200) return AccountCheck::Verified;
     if (status==401 || status==403) return AccountCheck::Rejected;
     if (status==429) return AccountCheck::RateLimited;
@@ -455,8 +472,26 @@ static AccountCheck lichessGet(const char* url,const std::string& token,const ch
     (void)post;
     (void)responseCode;
     (void)postBody;
+    (void)connectionFailure;
 #endif
     return AccountCheck::Failed;
+}
+bool validLichessStatusReply(std::string_view json) {
+    picojson::value reply;
+    if (json.size()>8192 || !serviceJson(json,reply) || !reply.is<picojson::array>()) return false;
+    const auto& users=reply.get<picojson::array>();
+    if (users.size()!=1 || !users.front().is<picojson::object>()) return false;
+    const auto& id=users.front().get("id");
+    return id.is<std::string>() && id.get<std::string>()=="lichess";
+}
+ConnectionResult testLichessConnection(const char* caPath,const std::atomic<bool>& cancelled) {
+    std::string body;
+    ConnectionResult failure;
+    const auto status=lichessGet("https://lichess.org/api/users/status?ids=lichess",{},caPath,cancelled,
+        readBody,&body,false,nullptr,false,nullptr,"",&failure);
+    if (status==AccountCheck::RateLimited) return {LichessConnection::RateLimited,{}};
+    if (status!=AccountCheck::Verified) return failure;
+    return {validLichessStatusReply(body)?LichessConnection::Reachable:LichessConnection::InvalidReply,{}};
 }
 AccountProfile verifyLichessAccount(const std::string& token,const char* caPath,
                                     const std::atomic<bool>& cancelled) {
@@ -585,22 +620,30 @@ FriendReply requestFriends(const FriendRequest& request,const std::string& token
     if (!cancelled.load()) reply.list=fetchFriends(token,caPath,cancelled);
     return reply;
 }
+namespace {
+struct InvitationBody { InvitationStream stream; bool valid=true; };
+size_t invitationBytes(char* bytes,size_t size,size_t count,void* target) {
+    auto& body=*static_cast<InvitationBody*>(target);
+    body.valid=body.stream.feed({bytes,size*count});
+    return body.valid?size*count:0;
+}
+}
 LobbyReply sendLobbyRequest(const LobbyRequest& request,const std::string& token,const char* caPath,
                             const std::atomic<bool>& cancelled) {
     const auto data=lobbyRequest(request);
-    if (!data) return {AccountCheck::InvalidReply,{}};
-    std::string body;
-    const auto status=lichessGet(("https://lichess.org"+data->first).c_str(),token,caPath,cancelled,readBody,&body,
-        request.action==LobbyAction::Seek,nullptr,true,nullptr,data->second.c_str());
-    LobbyReply reply{status,{}};
-    if (status==AccountCheck::Verified && request.action==LobbyAction::Challenge) {
-        picojson::value root;
-        if (!parseObject(body,root)) return {AccountCheck::InvalidReply,{}};
-        const auto& challenge=root.get("challenge").is<picojson::object>()?root.get("challenge"):root;
-        if (!challenge.get("id").is<std::string>()) return {AccountCheck::InvalidReply,{}};
-        reply.challengeId=challenge.get("id").get<std::string>();
-        if (!validGameId(reply.challengeId)) return {AccountCheck::InvalidReply,{}};
+    if (!data) return {AccountCheck::InvalidReply};
+    const auto url="https://lichess.org"+data->first;
+    if (request.action==LobbyAction::Challenge) {
+        InvitationBody body;
+        const auto status=lichessGet(url.c_str(),token,caPath,cancelled,invitationBytes,&body,true,
+            nullptr,true,nullptr,data->second.c_str());
+        if (!body.valid) return {AccountCheck::InvalidReply};
+        if (status!=AccountCheck::Verified) return {status};
+        const auto result=body.stream.finish();
+        return result?LobbyReply{status,*result}:LobbyReply{AccountCheck::InvalidReply};
     }
-    return reply;
+    std::string body;
+    return {lichessGet(url.c_str(),token,caPath,cancelled,readBody,&body,
+        request.action==LobbyAction::Seek,nullptr,true,nullptr,data->second.c_str())};
 }
 }
